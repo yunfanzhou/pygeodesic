@@ -38,6 +38,14 @@ public:
 	void trace_back(SurfacePoint& destination,		//trace back piecewise-linear path
 					std::vector<SurfacePoint>& path);
 
+	void trace_back_with_faces_and_barycentric(
+		SurfacePoint& destination,
+		std::vector<SurfacePoint>& path,
+		std::vector<unsigned>& face_ids_flat,
+		std::vector<unsigned>& face_offsets,
+		std::vector<double>& barycentric_start_flat,
+		std::vector<double>& barycentric_end_flat);
+
 	unsigned best_source(SurfacePoint& point,			//quickly find what source this point belongs to and what is the distance to this source
 		double& best_source_distance); 
 
@@ -45,6 +53,141 @@ public:
 
 private:
 	typedef std::set<interval_pointer, Interval> IntervalQueue;
+
+	static inline void compute_barycentric(face_pointer f, SurfacePoint& p, double& b0, double& b1, double& b2)
+	{
+		vertex_pointer A = f->adjacent_vertices()[0];
+		vertex_pointer B = f->adjacent_vertices()[1];
+		vertex_pointer C = f->adjacent_vertices()[2];
+
+		PointType pt = p.type();
+
+		// Exact case: point is one of the face's vertices — no arithmetic needed.
+		if(pt == VERTEX)
+		{
+			vertex_pointer v = static_cast<vertex_pointer>(p.base_element());
+			b0 = (v == A) ? 1.0 : 0.0;
+			b1 = (v == B) ? 1.0 : 0.0;
+			b2 = (v == C) ? 1.0 : 0.0;
+			return;
+		}
+
+		// Exact case: point lies on one of the face's edges.
+		// The opposite vertex gets exactly 0; the two edge endpoints are
+		// computed via a 1-D projection (avoids Gram-matrix accumulation).
+		if(pt == EDGE)
+		{
+			edge_pointer ep = static_cast<edge_pointer>(p.base_element());
+			vertex_pointer ev0 = ep->adjacent_vertices()[0];
+			vertex_pointer ev1 = ep->adjacent_vertices()[1];
+
+			// Identify the face vertex NOT on this edge (opposite) and the two that are.
+			// the parametric orders are
+			// A -> B-C
+			// B -> A-C
+			// C -> A-B
+			vertex_pointer opp, ea, eb;
+			if(ev0 != A && ev1 != A)      { opp = A; ea = B; eb = C; }
+			else if(ev0 != B && ev1 != B) { opp = B; ea = A; eb = C; }
+			else                          { opp = C; ea = A; eb = B; }
+
+			// 1-D parameter t along ea->eb so that p = ea + t*(eb-ea).
+			double ex = eb->x()-ea->x(), ey = eb->y()-ea->y(), ez = eb->z()-ea->z();
+			double len2 = ex*ex + ey*ey + ez*ez;
+			double t = 0.5;
+			if(len2 > 1e-30)
+			{
+				double dx = p.x()-ea->x(), dy = p.y()-ea->y(), dz = p.z()-ea->z();
+				t = (dx*ex + dy*ey + dz*ez) / len2;
+				t = std::max(0.0, std::min(1.0, t));
+			}
+
+			double ta = 1.0 - t, tb = t;
+			if(opp == A)      { b0 = 0.0; b1 = (ea==B) ? ta : tb; b2 = (ea==C) ? ta : tb; }
+			else if(opp == B) { b1 = 0.0; b0 = (ea==A) ? ta : tb; b2 = (ea==C) ? ta : tb; }
+			else              { b2 = 0.0; b0 = (ea==A) ? ta : tb; b1 = (ea==B) ? ta : tb; }
+			return;
+		}
+
+		// General case: point is interior to the face — use Gram-matrix projection.
+		double ax = A->x(), ay = A->y(), az = A->z();
+		double bx = B->x(), by = B->y(), bz = B->z();
+		double cx = C->x(), cy = C->y(), cz = C->z();
+		double px = p.x(), py = p.y(), pz = p.z();
+
+		double v0x = bx-ax, v0y = by-ay, v0z = bz-az;
+		double v1x = cx-ax, v1y = cy-ay, v1z = cz-az;
+		double v2x = px-ax, v2y = py-ay, v2z = pz-az;
+
+		double d00 = v0x*v0x + v0y*v0y + v0z*v0z;
+		double d01 = v0x*v1x + v0y*v1y + v0z*v1z;
+		double d11 = v1x*v1x + v1y*v1y + v1z*v1z;
+		double d20 = v2x*v0x + v2y*v0y + v2z*v0z;
+		double d21 = v2x*v1x + v2y*v1y + v2z*v1z;
+
+		double denom = d00*d11 - d01*d01;
+		if(std::abs(denom) < 1e-30)
+		{
+			b0 = 1.0/3.0;
+			b1 = 1.0/3.0;
+			b2 = 1.0/3.0;
+			return;
+		}
+
+		b1 = (d11*d20 - d01*d21) / denom;
+		b2 = (d00*d21 - d01*d20) / denom;
+		b0 = 1.0 - b1 - b2;
+	}
+
+	static inline void point_adjacent_faces(SurfacePoint& p, std::vector<face_pointer>& out)
+	{
+		out.clear();
+		PointType t = p.type();
+		if(t == FACE)
+		{
+			out.push_back(static_cast<face_pointer>(p.base_element()));
+			return;
+		}
+		else if(t == EDGE)
+		{
+			edge_pointer e = static_cast<edge_pointer>(p.base_element());
+			for(unsigned i=0; i<e->adjacent_faces().size(); ++i)
+			{
+				out.push_back(e->adjacent_faces()[i]);
+			}
+			return;
+		}
+		else if(t == VERTEX)
+		{
+			vertex_pointer v = static_cast<vertex_pointer>(p.base_element());
+			for(unsigned i=0; i<v->adjacent_faces().size(); ++i)
+			{
+				out.push_back(v->adjacent_faces()[i]);
+			}
+			return;
+		}
+		//UNDEFINED_POINT -> empty
+	}
+
+	static inline void intersect_faces_by_id(std::vector<face_pointer> const& a,
+	                                          std::vector<face_pointer> const& b,
+	                                          std::vector<face_pointer>& out)
+	{
+		out.clear();
+		for(unsigned i=0; i<a.size(); ++i)
+		{
+			face_pointer fa = a[i];
+			for(unsigned j=0; j<b.size(); ++j)
+			{
+				face_pointer fb = b[j];
+				if(fa->id() == fb->id())
+				{
+					out.push_back(fa);
+					break;
+				}
+			}
+		}
+	}
 
 	void update_list_and_queue(list_pointer list,
 							   IntervalWithStop* candidates,	//up to two candidates
@@ -1351,6 +1494,146 @@ inline void GeodesicAlgorithmExact::trace_back(SurfacePoint& destination,		//tra
 	if(path.back().distance(&source) > 0)
 	{
 		path.push_back(source);
+	}
+}
+
+inline void GeodesicAlgorithmExact::trace_back_with_faces_and_barycentric(
+	SurfacePoint& destination,
+	std::vector<SurfacePoint>& path,
+	std::vector<unsigned>& face_ids_flat,
+	std::vector<unsigned>& face_offsets,
+	std::vector<double>& barycentric_start_flat,
+	std::vector<double>& barycentric_end_flat)
+{
+	path.clear();
+	face_ids_flat.clear();
+	face_offsets.clear();
+	barycentric_start_flat.clear();
+	barycentric_end_flat.clear();
+
+	double best_total_distance;
+	double best_interval_position;
+	unsigned source_index = std::numeric_limits<unsigned>::max();
+	interval_pointer best_interval = best_first_interval(destination,
+	                                                     best_total_distance,
+	                                                     best_interval_position,
+	                                                     source_index);
+
+	if(best_total_distance >= GEODESIC_INF/2.0)
+	{
+		return;
+	}
+
+	path.push_back(destination);
+
+	if(best_interval)
+	{
+		std::vector<edge_pointer> possible_edges;
+		possible_edges.reserve(10);
+
+		while(visible_from_source(path.back()) < 0)
+		{
+			SurfacePoint& q = path.back();
+			possible_traceback_edges(q, possible_edges);
+
+			interval_pointer interval;
+			double total_distance;
+			double position;
+			best_point_on_the_edge_set(q,
+			                           possible_edges,
+			                           interval,
+			                           total_distance,
+			                           position);
+
+			assert(total_distance < GEODESIC_INF);
+			source_index = interval->source_index();
+
+			edge_pointer e = interval->edge();
+			SurfacePoint next_point;
+			double local_epsilon = SMALLEST_INTERVAL_RATIO*e->length();
+			if(position < local_epsilon)
+			{
+				next_point = SurfacePoint(e->v0());
+			}
+			else if(position > e->length()-local_epsilon)
+			{
+				next_point = SurfacePoint(e->v1());
+			}
+			else
+			{
+				double normalized_position = position/e->length();
+				next_point = SurfacePoint(e, normalized_position);
+			}
+			path.push_back(next_point);
+		}
+	}
+
+	SurfacePoint& source = static_cast<SurfacePoint&>(m_sources[source_index]);
+	if(path.back().distance(&source) > 0)
+	{
+		path.push_back(source);
+	}
+
+	// Postprocess: for each polyline segment, compute which face(s) it belongs to
+	// based on intersection of endpoint-adjacent face sets. In the common case, the
+	// intersection is a single triangle; if the segment lies exactly on a shared edge,
+	// the intersection is two faces (one on each side).
+	face_offsets.reserve(path.size() > 0 ? path.size() : 1);
+	face_offsets.push_back(0);
+
+	std::vector<face_pointer> faces_a;
+	std::vector<face_pointer> faces_b;
+	std::vector<face_pointer> segment_faces;
+
+	for(unsigned si=0; si+1<path.size(); ++si)
+	{
+		SurfacePoint& a = path[si];
+		SurfacePoint& b = path[si+1];
+
+		point_adjacent_faces(a, faces_a);
+		point_adjacent_faces(b, faces_b);
+		intersect_faces_by_id(faces_a, faces_b, segment_faces);
+
+		// Fallback: intersection is empty only when one endpoint is a face-interior
+		// source/destination point (adjacent to exactly one face). Use that face.
+		// Any other empty intersection is a topology error in the path.
+		if(segment_faces.empty())
+		{
+			if(faces_a.size() == 1)
+			{
+				segment_faces = faces_a;
+			}
+			else if(faces_b.size() == 1)
+			{
+				segment_faces = faces_b;
+			}
+			else
+			{
+				// Both endpoints are on edges or vertices with no shared face — should
+				// not occur for a valid geodesic path segment.
+				assert(false && "geodesic segment endpoints share no adjacent face");
+			}
+		}
+
+		assert(!segment_faces.empty());
+
+		for(unsigned fi=0; fi<segment_faces.size(); ++fi)
+		{
+			face_pointer f = segment_faces[fi];
+			face_ids_flat.push_back(f->id());
+			double a0, a1, a2;
+			double b0, b1, b2;
+			compute_barycentric(f, a, a0, a1, a2);
+			compute_barycentric(f, b, b0, b1, b2);
+			barycentric_start_flat.push_back(a0);
+			barycentric_start_flat.push_back(a1);
+			barycentric_start_flat.push_back(a2);
+			barycentric_end_flat.push_back(b0);
+			barycentric_end_flat.push_back(b1);
+			barycentric_end_flat.push_back(b2);
+		}
+
+		face_offsets.push_back((unsigned)face_ids_flat.size());
 	}
 }
 
