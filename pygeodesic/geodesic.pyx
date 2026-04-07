@@ -36,6 +36,7 @@ cdef extern from "geodesic_kirsanov/geodesic_algorithm_exact.h" namespace "geode
         void propagate(vector[SurfacePoint]&, double, vector[SurfacePoint]*)
         unsigned best_source(SurfacePoint&, double&)
         void trace_back(SurfacePoint&, vector[SurfacePoint]&)
+        void trace_back_with_faces_and_barycentric(SurfacePoint&, vector[SurfacePoint]&, vector[unsigned]&, vector[unsigned]&, vector[double]&, vector[double]&)
         void geodesic(SurfacePoint&, SurfacePoint&, vector[SurfacePoint]&)
 
 cdef extern from "geodesic_kirsanov/geodesic_algorithm_base.h" namespace "geodesic":
@@ -201,6 +202,85 @@ cdef class PyGeodesicAlgorithmExact:
         distances[distances==GEODESIC_INF] = numpy.inf
 
         return distances, best_source
+
+    def geodesicDistanceWithFacesAndBarycentric(self, sourceIndex, targetIndex):
+        """
+        Calculates the geodesic path from sourceIndex to targetIndex and returns,
+        for each polyline segment of the path, the face(s) it crosses and the
+        barycentric coordinates of the segment's start/end point within each face.
+
+        Variables:
+          sourceIndex (int): index of source vertex in mesh points array
+          targetIndex (int): index of target vertex in mesh points array
+
+        Returns:
+          path_length  (float):         geodesic distance
+          path_points  (ndarray, (n,3)): waypoints of the path (destination first, source last)
+          face_ids     (ndarray, (m,)):  face IDs for every (segment, face) entry
+          face_offsets (ndarray, (n,)):  face_ids[face_offsets[i]:face_offsets[i+1]] are the
+                                         faces crossed by segment i (path[i] -> path[i+1])
+          bary_start   (ndarray, (m,3)): barycentric coords of each segment-start in its face
+          bary_end     (ndarray, (m,3)): barycentric coords of each segment-end in its face
+        """
+
+        cdef Py_ssize_t i
+        cdef vector[SurfacePoint] path
+        cdef vector[SurfacePoint] sources
+        cdef vector[unsigned] face_ids_flat
+        cdef vector[unsigned] face_offsets_vec
+        cdef vector[double] bary_start_flat
+        cdef vector[double] bary_end_flat
+
+        def checkIndexWithinLimits(index):
+            return index >= 0 and index <= self.mesh.vertices().size() - 1
+
+        try:
+            assert self.algorithm != NULL, "PyGeodesicAlgorithmExact class was not initialized correctly"
+            sourceIndex = int(sourceIndex)
+            targetIndex = int(targetIndex)
+            assert checkIndexWithinLimits(sourceIndex), "'sourceIndex' is outside limits of mesh"
+            assert checkIndexWithinLimits(targetIndex), "'targetIndex' is outside limits of mesh"
+        except Exception as e:
+            print(f'Error in PyGeodesicAlgorithmExact.geodesicDistanceWithFacesAndBarycentric: {e}')
+            return None, None, None, None, None, None
+
+        cdef SurfacePoint source = SurfacePoint(&self.mesh.vertices()[sourceIndex])
+        cdef SurfacePoint target = SurfacePoint(&self.mesh.vertices()[targetIndex])
+
+        sources.push_back(source)
+        self.algorithm.propagate(sources, GEODESIC_INF, NULL)
+        self.algorithm.trace_back_with_faces_and_barycentric(
+            target, path,
+            face_ids_flat, face_offsets_vec,
+            bary_start_flat, bary_end_flat)
+
+        path_points = numpy.empty((path.size(), 3), dtype=numpy.float64)
+        for i in range(path.size()):
+            path_points[i, 0] = path[i].x()
+            path_points[i, 1] = path[i].y()
+            path_points[i, 2] = path[i].z()
+
+        face_ids     = numpy.empty(face_ids_flat.size(), dtype=numpy.uint32)
+        face_offsets = numpy.empty(face_offsets_vec.size(), dtype=numpy.uint32)
+        for i in range(face_ids_flat.size()):
+            face_ids[i] = face_ids_flat[i]
+        for i in range(face_offsets_vec.size()):
+            face_offsets[i] = face_offsets_vec[i]
+
+        n_entries = face_ids_flat.size()
+        bary_start = numpy.empty((n_entries, 3), dtype=numpy.float64)
+        bary_end   = numpy.empty((n_entries, 3), dtype=numpy.float64)
+        for i in range(n_entries):
+            bary_start[i, 0] = bary_start_flat[3*i]
+            bary_start[i, 1] = bary_start_flat[3*i + 1]
+            bary_start[i, 2] = bary_start_flat[3*i + 2]
+            bary_end[i, 0] = bary_end_flat[3*i]
+            bary_end[i, 1] = bary_end_flat[3*i + 1]
+            bary_end[i, 2] = bary_end_flat[3*i + 2]
+
+        path_length = length(path)
+
+        return path_length, path_points, face_ids, face_offsets, bary_start, bary_end
 
     def __dealloc__(self):
         del self.algorithm
