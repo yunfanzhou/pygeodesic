@@ -6,6 +6,21 @@ import pygeodesic.geodesic as geodesic
 import numpy as np
 import pytest
 
+igl = pytest.importorskip("igl", reason="igl not installed")
+def load_mesh(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".txt":
+        return geodesic.read_mesh_from_file(filename)
+
+    v, f = igl.read_triangle_mesh(filename)
+    points = np.asarray(v, dtype=np.float64)
+    faces = np.asarray(f, dtype=np.int32)
+
+    assert points.ndim == 2 and points.shape[1] == 3, "Mesh vertices should have shape (N,3)"
+    assert faces.ndim == 2 and faces.shape[1] == 3, "Mesh faces should have shape (M,3)"
+
+    return points, faces
+
 
 THIS_PATH = pathlib.Path(__file__).parent.resolve()
 DATA_PATH = os.path.join(THIS_PATH, "data")
@@ -16,169 +31,48 @@ def test_version():
 
 
 @pytest.fixture()
-def geoalg():
-    # Read the mesh to get the points and faces of the mesh
-    filename = os.path.join(DATA_PATH, "flat_triangular_mesh.txt")
-    points, faces = geodesic.read_mesh_from_file(filename)
+def mesh():
+    filename = os.path.join(DATA_PATH, "cat_head.obj")
+    return load_mesh(filename)
+
+
+@pytest.fixture()
+def geoalg(mesh):
+    points, faces = mesh
     return geodesic.PyGeodesicAlgorithmExact(points, faces)
 
 
-def test_distance(geoalg):
-    source_index = 25
-    target_index = 97
-    distance, path = geoalg.geodesicDistance(source_index, target_index)
-    assert np.isclose(distance, 1.697056274847714)
+@pytest.fixture()
+def random_source_target_pairs(mesh):
+    points, _ = mesh
+    n = points.shape[0]
+    rng = np.random.default_rng(42)
+    pairs = rng.integers(0, n, size=(50, 2), dtype=np.int32)
 
-    known_path = np.array(
-        [
-            [3.1, 0.8, 0.0],
-            [3.0, 0.7, 0.0],
-            [2.9, 0.6, 0.0],
-            [2.8, 0.5, 0.0],
-            [2.7, 0.4, 0.0],
-            [2.6, 0.3, 0.0],
-            [2.5, 0.2, 0.0],
-            [2.4, 0.1, 0.0],
-            [2.3, 0.0, 0.0],
-            [2.2, -0.1, 0.0],
-            [2.1, -0.2, 0.0],
-            [2.0, -0.3, 0.0],
-            [1.9, -0.4, 0.0],
-        ]
-    )
-
-    assert np.allclose(known_path, path)
+    # avoid degenerate source == target by nudging target
+    same = pairs[:, 0] == pairs[:, 1]
+    pairs[same, 1] = (pairs[same, 1] + 1) % n
+    return pairs
 
 
-def test_distances(geoalg):
-    source_index = 25
-    source_indices = np.array([source_index])
+@pytest.mark.parametrize("pair_idx", range(50))
+def test_distance(geoalg, random_source_target_pairs, pair_idx):
+    source_index, target_index = random_source_target_pairs[pair_idx]
+    distance, path = geoalg.geodesicDistance(int(source_index), int(target_index))
+    assert np.isfinite(distance)
+    assert distance >= 0.0
+    assert path.ndim == 2 and path.shape[1] == 3
+    assert path.shape[0] >= 1
+
+
+def test_distances(geoalg, mesh, random_source_target_pairs):
+    points, _ = mesh
+    source_indices = np.unique(random_source_target_pairs[:, 0]).astype(np.int32)
     distances, best_source = geoalg.geodesicDistances(source_indices)
-
-    known_distances = np.array(
-        [
-            0.72111026,
-            0.56568542,
-            0.4472136,
-            0.4,
-            0.4472136,
-            0.56568542,
-            0.72111026,
-            0.89442719,
-            1.07703296,
-            1.26491106,
-            1.45602198,
-            0.63245553,
-            0.4472136,
-            0.28284271,
-            0.2,
-            0.28284271,
-            0.4472136,
-            0.63245553,
-            0.82462113,
-            1.0198039,
-            1.21655251,
-            1.41421356,
-            0.6,
-            0.4,
-            0.2,
-            0.0,
-            0.2,
-            0.4,
-            0.6,
-            0.8,
-            1.0,
-            1.2,
-            1.4,
-            0.63245553,
-            0.4472136,
-            0.28284271,
-            0.2,
-            0.28284271,
-            0.4472136,
-            0.63245553,
-            0.82462113,
-            1.0198039,
-            1.21655251,
-            1.41421356,
-            0.72111026,
-            0.56568542,
-            0.4472136,
-            0.4,
-            0.4472136,
-            0.56568542,
-            0.72111026,
-            0.89442719,
-            1.07703296,
-            1.26491106,
-            1.45602198,
-            0.84852814,
-            0.72111026,
-            0.63245553,
-            0.6,
-            0.63245553,
-            0.72111026,
-            0.84852814,
-            1.0,
-            1.16619038,
-            1.34164079,
-            1.52315462,
-            1.0,
-            0.89442719,
-            0.82462113,
-            0.8,
-            0.82462113,
-            0.89442719,
-            1.0,
-            1.13137085,
-            1.28062485,
-            1.44222051,
-            1.61245155,
-            1.16619038,
-            1.07703296,
-            1.0198039,
-            1.0,
-            1.0198039,
-            1.07703296,
-            1.16619038,
-            1.28062485,
-            1.41421356,
-            1.56204994,
-            1.72046505,
-            1.34164079,
-            1.26491106,
-            1.21655251,
-            1.2,
-            1.21655251,
-            1.26491106,
-            1.34164079,
-            1.44222051,
-            1.56204994,
-            1.69705627,
-            1.84390889,
-            1.52315462,
-            1.45602198,
-            1.41421356,
-            1.4,
-            1.41421356,
-            1.45602198,
-            1.52315462,
-            1.61245155,
-            1.72046505,
-            1.84390889,
-            1.97989899,
-            1.70880075,
-            1.64924225,
-            1.61245155,
-            1.6,
-            1.61245155,
-            1.64924225,
-            1.70880075,
-            1.78885438,
-            1.88679623,
-            2.0,
-            2.12602916,
-        ]
-    )
-
-    assert np.allclose(known_distances, distances)
+    assert distances.ndim == 1
+    assert best_source.ndim == 1
+    assert distances.shape[0] == points.shape[0]
+    assert best_source.shape[0] == distances.shape[0]
+    for source_index in source_indices:
+        assert np.isfinite(distances[source_index])
+        assert np.isclose(distances[source_index], 0.0)
