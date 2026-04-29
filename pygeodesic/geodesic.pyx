@@ -19,6 +19,7 @@ cdef extern from "geodesic_kirsanov/geodesic_mesh_elements.h" namespace "geodesi
     cdef cppclass SurfacePoint:
         SurfacePoint()
         SurfacePoint(Vertex*)
+        SurfacePoint(Face*, double, double, double)
         double& x()
         double& y()
         double& z()
@@ -78,7 +79,7 @@ cdef class PyGeodesicAlgorithmExact:
             _faces  = numpy.asarray(_faces, dtype=numpy.int32)
             assert len(_points.shape) == 2 and _points.shape[-1] == 3, "'points' array has incorrect shape"
             assert len(_faces.shape)  == 2 and _faces.shape[-1] == 3, "'faces' array has incorrect shape"
-            assert _faces.min() == 0 and _faces.max() == _points.shape[0]-1, 'mesh vertices are not numbered sequentially from 0'
+            assert _faces.min() >= 0 and _faces.max() <= _points.shape[0]-1, 'mesh vertices are not numbered sequentially from 0'
         except Exception as e:
             print(f'Error in PyGeodesicAlgorithmExact.__cinit__: {e}')
             self.algorithm = NULL
@@ -246,6 +247,105 @@ cdef class PyGeodesicAlgorithmExact:
 
         cdef SurfacePoint source = SurfacePoint(&self.mesh.vertices()[sourceIndex])
         cdef SurfacePoint target = SurfacePoint(&self.mesh.vertices()[targetIndex])
+
+        sources.push_back(source)
+        self.algorithm.propagate(sources, GEODESIC_INF, NULL)
+        self.algorithm.trace_back_with_faces_and_barycentric(
+            target, path,
+            face_ids_flat, face_offsets_vec,
+            bary_start_flat, bary_end_flat)
+
+        path_points = numpy.empty((path.size(), 3), dtype=numpy.float64)
+        for i in range(path.size()):
+            path_points[i, 0] = path[i].x()
+            path_points[i, 1] = path[i].y()
+            path_points[i, 2] = path[i].z()
+
+        face_ids     = numpy.empty(face_ids_flat.size(), dtype=numpy.uint32)
+        face_offsets = numpy.empty(face_offsets_vec.size(), dtype=numpy.uint32)
+        for i in range(face_ids_flat.size()):
+            face_ids[i] = face_ids_flat[i]
+        for i in range(face_offsets_vec.size()):
+            face_offsets[i] = face_offsets_vec[i]
+
+        n_entries = face_ids_flat.size()
+        bary_start = numpy.empty((n_entries, 3), dtype=numpy.float64)
+        bary_end   = numpy.empty((n_entries, 3), dtype=numpy.float64)
+        for i in range(n_entries):
+            bary_start[i, 0] = bary_start_flat[3*i]
+            bary_start[i, 1] = bary_start_flat[3*i + 1]
+            bary_start[i, 2] = bary_start_flat[3*i + 2]
+            bary_end[i, 0] = bary_end_flat[3*i]
+            bary_end[i, 1] = bary_end_flat[3*i + 1]
+            bary_end[i, 2] = bary_end_flat[3*i + 2]
+
+        path_length = length(path)
+
+        return path_length, path_points, face_ids, face_offsets, bary_start, bary_end
+
+    def geodesicDistanceWithFacesAndBarycentricFromSurfacePoints(self,
+                                                                  int fid_src,
+                                                                  src_xyz,
+                                                                  int fid_tgt,
+                                                                  tgt_xyz,
+                                                                  vid_src=None,
+                                                                  vid_tgt=None):
+        """
+        Like geodesicDistanceWithFacesAndBarycentric but source/target are
+        arbitrary surface points (not required to be mesh vertices).
+
+        Variables:
+          fid_src (int):        face index of the source point
+          src_xyz (array-like, shape (3,)): 3D coordinates of the source point
+          fid_tgt (int):        face index of the target point
+          tgt_xyz (array-like, shape (3,)): 3D coordinates of the target point
+          vid_src (int or None): if the source snapped to a mesh vertex, its index
+          vid_tgt (int or None): if the target snapped to a mesh vertex, its index
+
+        When vid_src/vid_tgt are given the SurfacePoint is created from the vertex
+        pointer (VERTEX_POINT type) so point_adjacent_faces sees all incident faces.
+
+        Returns: same as geodesicDistanceWithFacesAndBarycentric
+          (path_length, path_points, face_ids, face_offsets, bary_start, bary_end)
+        """
+        cdef Py_ssize_t i
+        cdef vector[SurfacePoint] path
+        cdef vector[SurfacePoint] sources
+        cdef vector[unsigned] face_ids_flat
+        cdef vector[unsigned] face_offsets_vec
+        cdef vector[double] bary_start_flat
+        cdef vector[double] bary_end_flat
+
+        try:
+            assert self.algorithm != NULL, "PyGeodesicAlgorithmExact class was not initialized correctly"
+            assert 0 <= fid_src < <int>self.mesh.faces().size(), "'fid_src' is outside limits of mesh faces"
+            assert 0 <= fid_tgt < <int>self.mesh.faces().size(), "'fid_tgt' is outside limits of mesh faces"
+            src_xyz = numpy.asarray(src_xyz, dtype=numpy.float64).ravel()
+            tgt_xyz = numpy.asarray(tgt_xyz, dtype=numpy.float64).ravel()
+            assert src_xyz.shape[0] == 3, "'src_xyz' must have 3 components"
+            assert tgt_xyz.shape[0] == 3, "'tgt_xyz' must have 3 components"
+            if vid_src is not None:
+                assert 0 <= int(vid_src) < <int>self.mesh.vertices().size(), "'vid_src' outside vertex range"
+            if vid_tgt is not None:
+                assert 0 <= int(vid_tgt) < <int>self.mesh.vertices().size(), "'vid_tgt' outside vertex range"
+        except Exception as e:
+            print(f'Error in geodesicDistanceWithFacesAndBarycentricFromSurfacePoints: {e}')
+            return None, None, None, None, None, None
+
+        cdef SurfacePoint source
+        cdef SurfacePoint target
+        if vid_src is not None:
+            source = SurfacePoint(&self.mesh.vertices()[int(vid_src)])
+        else:
+            source = SurfacePoint(
+                &self.mesh.faces()[fid_src],
+                src_xyz[0], src_xyz[1], src_xyz[2])
+        if vid_tgt is not None:
+            target = SurfacePoint(&self.mesh.vertices()[int(vid_tgt)])
+        else:
+            target = SurfacePoint(
+                &self.mesh.faces()[fid_tgt],
+                tgt_xyz[0], tgt_xyz[1], tgt_xyz[2])
 
         sources.push_back(source)
         self.algorithm.propagate(sources, GEODESIC_INF, NULL)

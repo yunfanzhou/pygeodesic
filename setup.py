@@ -47,6 +47,8 @@ class build_ext_dependencies(build_ext):
 
 cmdclass = {"build_ext": build_ext_dependencies}
 ext_modules = []
+_release_flags = ["-O3", "-DNDEBUG"]
+
 if use_cython:
     ext_modules += [
         Extension(
@@ -55,6 +57,7 @@ if use_cython:
                 "pygeodesic/geodesic.pyx",
             ],
             language="c++",
+            extra_compile_args=_release_flags,
         )
     ]
 else:
@@ -65,6 +68,7 @@ else:
                 "pygeodesic/geodesic.cpp",
             ],
             language="c++",
+            extra_compile_args=_release_flags,
         )
     ]
 

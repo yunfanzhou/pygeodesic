@@ -20,8 +20,9 @@ double const GEODESIC_INF = 1e100;
 
 //in order to avoid numerical problems with "infinitely small" intervals,
 //we drop all the intervals smaller than SMALLEST_INTERVAL_RATIO*edge_length
-double const SMALLEST_INTERVAL_RATIO = 1e-6;		
-//double const SMALL_EPSILON = 1e-10;
+double const SMALLEST_INTERVAL_RATIO = 1e-3;
+//absolute distance tolerance for deduplicating path points during traceback
+double const GEODESIC_PATH_POINT_EPSILON = 1e-10;
 
 
 inline double cos_from_edges(double const a,			//compute the cosine of the angle given the lengths of the edges

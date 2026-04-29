@@ -1574,6 +1574,20 @@ inline void GeodesicAlgorithmExact::trace_back_with_faces_and_barycentric(
 		path.push_back(source);
 	}
 
+	// Remove consecutive duplicate path points (can arise when the destination is
+	// snapped exactly onto a mesh edge, causing the first trace-back step to
+	// land on the same 3D position).
+	{
+		std::vector<SurfacePoint> deduped;
+		deduped.push_back(path[0]);
+		for (unsigned i = 1; i < path.size(); ++i)
+		{
+			if (path[i].distance(&deduped.back()) > SMALLEST_INTERVAL_RATIO)
+				deduped.push_back(path[i]);
+		}
+		path = deduped;
+	}
+
 	// Postprocess: for each polyline segment, compute which face(s) it belongs to
 	// based on intersection of endpoint-adjacent face sets. In the common case, the
 	// intersection is a single triangle; if the segment lies exactly on a shared edge,
