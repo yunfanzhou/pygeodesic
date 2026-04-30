@@ -42,7 +42,7 @@ class build_ext_dependencies(build_ext):
         import numpy
 
         self.include_dirs.append(numpy.get_include())
-        self.include_dirs.append("pygeodesic\geodesic_kirsanov")
+        self.include_dirs.append(path.join("pygeodesic", "geodesic_kirsanov"))
 
 
 cmdclass = {"build_ext": build_ext_dependencies}
