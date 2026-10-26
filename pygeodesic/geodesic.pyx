@@ -311,6 +311,7 @@ cdef class PyGeodesicAlgorithmExact:
         cdef Py_ssize_t i
         cdef vector[SurfacePoint] path
         cdef vector[SurfacePoint] sources
+        cdef vector[SurfacePoint] stop_at_target
         cdef vector[unsigned] face_ids_flat
         cdef vector[unsigned] face_offsets_vec
         cdef vector[double] bary_start_flat
@@ -348,7 +349,8 @@ cdef class PyGeodesicAlgorithmExact:
                 tgt_xyz[0], tgt_xyz[1], tgt_xyz[2])
 
         sources.push_back(source)
-        self.algorithm.propagate(sources, GEODESIC_INF, NULL)
+        stop_at_target.push_back(target)
+        self.algorithm.propagate(sources, 0.0, &stop_at_target)  # 0: stop as soon as the target is covered
         self.algorithm.trace_back_with_faces_and_barycentric(
             target, path,
             face_ids_flat, face_offsets_vec,
